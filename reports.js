@@ -1,7 +1,7 @@
 const router = require('express').Router();
-const auth   = require('../middleware/auth');
-const role   = require('../middleware/role');
-const sb     = require('../lib/supabase');
+const auth   = require('./auth_middleware');
+const role   = require('./role');
+const sb     = require('./supabase');
 
 router.get('/payroll-summary', auth, role('admin','hr','hr_manager','payroll_officer'), async (req, res) => {
   const { period } = req.query;

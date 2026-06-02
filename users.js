@@ -1,8 +1,8 @@
 const router = require('express').Router();
 const bcrypt = require('bcryptjs');
-const auth   = require('../middleware/auth');
-const role   = require('../middleware/role');
-const sb     = require('../lib/supabase');
+const auth   = require('./auth_middleware');
+const role   = require('./role');
+const sb     = require('./supabase');
 
 const HR_ROLES = ['admin','hr','hr_manager'];
 

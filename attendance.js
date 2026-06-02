@@ -1,7 +1,7 @@
 const router = require('express').Router();
-const auth   = require('../middleware/auth');
-const role   = require('../middleware/role');
-const sb     = require('../lib/supabase');
+const auth   = require('./auth_middleware');
+const role   = require('./role');
+const sb     = require('./supabase');
 
 // GET /api/attendance
 router.get('/', auth, async (req, res) => {

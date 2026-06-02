@@ -1,8 +1,8 @@
 const router  = require('express').Router();
-const auth    = require('../middleware/auth');
-const role    = require('../middleware/role');
-const sb      = require('../lib/supabase');
-const { computePayroll } = require('../lib/payrollEngine');
+const auth    = require('./auth_middleware');
+const role    = require('./role');
+const sb      = require('./supabase');
+const { computePayroll } = require('./payrollEngine');
 
 const PAYROLL_ROLES = ['admin','hr','hr_manager','payroll_officer'];
 
