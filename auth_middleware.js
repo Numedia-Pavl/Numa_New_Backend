@@ -1,8 +1,10 @@
-const jwt     = require('jsonwebtoken');
+const jwt      = require('jsonwebtoken');
 const { supabase } = require('./supabase');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
+// Main verify function — exported as default so existing routes using
+// require('./auth_middleware') directly still work
 async function verify(req, res, next) {
   try {
     const authHeader = req.headers['authorization'] || '';
@@ -34,10 +36,9 @@ async function verify(req, res, next) {
 
     req.user = { id: user.id, email: user.email, roles: user.roles || [] };
 
-    if (!req.user.employee_id) {
-      const { data: emp } = await supabase.from('employees').select('id').eq('email', user.email).maybeSingle();
-      req.user.employee_id = emp?.id || null;
-    }
+    const { data: emp } = await supabase
+      .from('employees').select('id').eq('email', user.email).maybeSingle();
+    req.user.employee_id = emp?.id || null;
 
     next();
   } catch (err) {
@@ -61,4 +62,14 @@ const isAdmin   = (req) => hasRole(req, ['admin']);
 const isHR      = (req) => hasRole(req, ['admin','hr','hr_manager']);
 const isManager = (req) => hasRole(req, ['admin','hr','hr_manager','manager','supervisor','department_head']);
 
-module.exports = { verify, requireRole, hasRole, isAdmin, isHR, isManager };
+// Export verify as the default function so old route files work unchanged:
+//   const authMiddleware = require('./auth_middleware')  → gets verify()
+//   const auth = require('./auth_middleware')            → gets verify()
+//   auth.requireRole(...)                               → works too
+module.exports         = verify;
+module.exports.verify  = verify;
+module.exports.requireRole = requireRole;
+module.exports.hasRole     = hasRole;
+module.exports.isAdmin     = isAdmin;
+module.exports.isHR        = isHR;
+module.exports.isManager   = isManager;
