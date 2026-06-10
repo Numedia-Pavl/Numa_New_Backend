@@ -1,74 +1,178 @@
-const router = require('express').Router();
-const bcrypt = require('bcryptjs');
-const auth   = require('./auth_middleware');
-const role   = require('./role');
-const sb     = require('./supabase');
+require('dotenv').config();
+const express = require('express');
+const router  = express.Router();
+const bcrypt  = require('bcryptjs');
 
-const HR_ROLES = ['admin','hr','hr_manager'];
+const _sb = require('./supabase');
+const supabase = _sb.supabase || _sb;
 
-// GET /api/users — list all users (HR/Admin only)
-router.get('/', auth, role(...HR_ROLES), async (req, res) => {
-  const { data, error } = await sb
-    .from('users')
-    .select('id, email, full_name, roles, is_active, created_at, phone, employee_id, employee:employees(employee_id, position, department:departments(name))')
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ success: false, message: error.message });
-  res.json({ success: true, users: data });
+const auth = require('./auth_middleware');
+
+// ── GET /api/users ── List all users (admin only) ──────────────────────────
+router.get('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+  try {
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, email, first_name, last_name, roles, employment_status, department, created_at, last_login')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Enrich with employee link info
+    const { data: emps } = await supabase
+      .from('employees')
+      .select('id, employee_id, email, position, department')
+      .in('email', users.map(u => u.email).filter(Boolean));
+
+    const empMap = {};
+    (emps || []).forEach(e => { empMap[e.email] = e; });
+
+    const enriched = users.map(u => ({
+      id:          u.id,
+      email:       u.email,
+      full_name:   ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email,
+      first_name:  u.first_name,
+      last_name:   u.last_name,
+      roles:       u.roles || ['employee'],
+      department:  u.department || empMap[u.email]?.department || null,
+      employee_id: empMap[u.email]?.id || null,
+      is_active:   u.employment_status !== 'inactive',
+      created_at:  u.created_at,
+      last_login:  u.last_login,
+    }));
+
+    res.json({ success: true, users: enriched });
+  } catch (err) {
+    console.error('GET /api/users error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
-// POST /api/users — create user account (HR/Admin only)
-router.post('/', auth, role(...HR_ROLES), async (req, res) => {
-  const { email, password, full_name, roles, employee_id, department, phone } = req.body;
-  if (!email || !password || !full_name)
-    return res.status(400).json({ success: false, message: 'email, password, full_name required' });
+// ── POST /api/users ── Admin creates a user account ────────────────────────
+router.post('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+  try {
+    const { email, password, full_name, roles, employee_id, department } = req.body;
 
-  const { data: existing } = await sb.from('users').select('id').eq('email', email.toLowerCase()).single();
-  if (existing) return res.status(409).json({ success: false, message: 'Email already has an account' });
+    if (!email || !password || !full_name)
+      return res.status(400).json({ success: false, message: 'email, password, and full_name are required.' });
 
-  const hash = await bcrypt.hash(password, 12);
-  const { data: user, error } = await sb.from('users').insert({
-    email: email.toLowerCase(), password_hash: hash, full_name,
-    roles: roles || ['employee'], is_active: true,
-    employee_id: employee_id || null, phone: phone || null,
-  }).select().single();
+    if (password.length < 8)
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
 
-  if (error) return res.status(500).json({ success: false, message: error.message });
+    const cleanEmail = email.toLowerCase().trim();
 
-  await sb.from('activity_logs').insert({
-    user_id: req.user.id, action: 'CREATE_USER',
-    details: `Created user account for ${full_name} (${email})`
-  }).catch(() => {});
+    // Check for existing user
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', cleanEmail)
+      .maybeSingle();
 
-  res.status(201).json({ success: true, user });
+    if (existing)
+      return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+
+    const nameParts  = full_name.trim().split(' ');
+    const first_name = nameParts[0] || '';
+    const last_name  = nameParts.slice(1).join(' ') || '';
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const { data: user, error: uErr } = await supabase
+      .from('users')
+      .insert({
+        email:            cleanEmail,
+        first_name,
+        last_name,
+        password_hash,
+        roles:            roles || ['employee'],
+        department:       department || null,
+        employment_status:'active',
+      })
+      .select()
+      .single();
+
+    if (uErr) throw uErr;
+
+    // Link to existing employee record by employee_id or email
+    if (employee_id) {
+      await supabase
+        .from('employees')
+        .update({ user_id: user.id, employment_status: 'active' })
+        .eq('id', employee_id);
+    } else {
+      // Try to link by email
+      const { data: empByEmail } = await supabase
+        .from('employees')
+        .select('id')
+        .eq('email', cleanEmail)
+        .maybeSingle();
+
+      if (empByEmail) {
+        await supabase
+          .from('employees')
+          .update({ user_id: user.id })
+          .eq('id', empByEmail.id);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Account created for ${full_name}.`,
+      user: {
+        id:        user.id,
+        email:     user.email,
+        full_name,
+        roles:     user.roles,
+        is_active: true,
+      }
+    });
+
+  } catch (err) {
+    console.error('POST /api/users error:', err.message);
+    if (err.code === '23505')
+      return res.status(409).json({ success: false, message: 'Email already exists.' });
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
-// PUT /api/users/:id — update user (HR/Admin only)
-router.put('/:id', auth, role(...HR_ROLES), async (req, res) => {
-  const { email, full_name, roles, is_active, password, phone } = req.body;
-  const updates = {};
-  if (email)     updates.email    = email.toLowerCase();
-  if (full_name) updates.full_name = full_name;
-  if (roles)     updates.roles    = roles;
-  if (phone)     updates.phone    = phone;
-  if (typeof is_active === 'boolean') updates.is_active = is_active;
-  if (password && password.length >= 8) updates.password_hash = await bcrypt.hash(password, 12);
+// ── PUT /api/users/:id ── Update roles / department ────────────────────────
+router.put('/:id', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+  try {
+    const { roles, department, employment_status } = req.body;
+    const updates = {};
+    if (roles)             updates.roles = roles;
+    if (department)        updates.department = department;
+    if (employment_status) updates.employment_status = employment_status;
 
-  const { data, error } = await sb.from('users').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ success: false, message: error.message });
+    const { data, error } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-  await sb.from('activity_logs').insert({
-    user_id: req.user.id, action: 'UPDATE_USER', details: `Updated user ${req.params.id}`
-  }).catch(() => {});
-
-  res.json({ success: true, user: data });
+    if (error) throw error;
+    res.json({ success: true, user: data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
-// DELETE /api/users/:id — deactivate (never hard delete)
-router.delete('/:id', auth, role('admin'), async (req, res) => {
-  if (req.params.id === req.user.id)
-    return res.status(400).json({ success: false, message: 'Cannot deactivate your own account' });
-  await sb.from('users').update({ is_active: false }).eq('id', req.params.id);
-  res.json({ success: true, message: 'User deactivated' });
+// ── DELETE /api/users/:id ── Deactivate (soft delete) ──────────────────────
+router.delete('/:id', auth.verify, auth.requireRole('admin'), async (req, res) => {
+  try {
+    if (req.params.id === req.user.id)
+      return res.status(400).json({ success: false, message: "You cannot deactivate your own account." });
+
+    await supabase
+      .from('users')
+      .update({ employment_status: 'inactive' })
+      .eq('id', req.params.id);
+
+    res.json({ success: true, message: 'User deactivated.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 module.exports = router;
