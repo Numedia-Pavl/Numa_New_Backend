@@ -1,99 +1,190 @@
 require('dotenv').config();
-const router  = require('express').Router();
+const express = require('express');
+const router  = express.Router();
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
-const sb      = require('./supabase');
+const { supabase } = require('./supabase');
+const auth    = require('./auth_middleware');
+
+const JWT_SECRET  = process.env.JWT_SECRET;
+const JWT_EXPIRES = '8h';
 
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ success: false, message: 'Email and password required' });
-
   try {
-    // Simple query — no joins that could fail
-    const { data: user, error } = await sb
-      .from('users')
-      .select('*')
-      .eq('email', email.toLowerCase().trim())
-      .single();
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ success: false, message: 'Email and password are required.' });
 
-    if (error || !user) {
-      console.log('User not found:', email, error?.message);
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
+    const { data: user, error } = await supabase
+      .from('users').select('*').eq('email', email.toLowerCase().trim()).maybeSingle();
 
-    if (!user.is_active)
-      return res.status(403).json({ success: false, message: 'Account is deactivated' });
+    if (error || !user)
+      return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+
+    if (user.employment_status === 'inactive')
+      return res.status(403).json({ success: false, message: 'Account is deactivated. Contact your HR administrator.' });
 
     const valid = await bcrypt.compare(password, user.password_hash);
-    console.log('Password check for', email, ':', valid);
-
     if (!valid)
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({ success: false, message: 'Invalid email or password.' });
 
-    const payload = {
-      id:          user.id,
-      email:       user.email,
-      roles:       user.roles || ['employee'],
-      employee_id: user.employee_id || null,
-      full_name:   user.full_name,
-    };
+    const { data: emp } = await supabase
+      .from('employees').select('id, employee_id').eq('email', user.email).maybeSingle();
 
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ success: true, token, user: payload });
+    supabase.from('users').update({ last_login: new Date() }).eq('id', user.id).then(() => {});
 
+    const token = makeToken(user, emp?.id);
+    res.json({ success: true, token, user: publicUser(user, emp) });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ success: false, message: 'Server error during login' });
+    console.error('Login error:', err.message);
+    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
   }
 });
 
-// POST /api/auth/register
+// POST /api/auth/register — Self-service signup
 router.post('/register', async (req, res) => {
-  const { email, password, first_name, last_name, company_name, industry, headcount, address, phone, plan } = req.body;
+  try {
+    const { first_name, last_name, email, password, confirm_password } = req.body;
 
-  if (!email || !password || !first_name || !last_name)
-    return res.status(400).json({ success: false, message: 'Required fields missing' });
+    const errs = [];
+    if (!first_name?.trim())  errs.push('First name is required.');
+    if (!last_name?.trim())   errs.push('Last name is required.');
+    if (!email?.trim())       errs.push('Email is required.');
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.push('Enter a valid email address.');
+    if (!password)            errs.push('Password is required.');
+    else if (password.length < 8) errs.push('Password must be at least 8 characters.');
+    if (confirm_password !== undefined && password !== confirm_password)
+      errs.push('Passwords do not match.');
+    if (errs.length) return res.status(400).json({ success: false, message: errs.join(' ') });
 
-  const { data: existing } = await sb.from('users').select('id').eq('email', email.toLowerCase()).single();
-  if (existing)
-    return res.status(409).json({ success: false, message: 'An account with this email already exists' });
+    const cleanEmail = email.toLowerCase().trim();
 
-  const hash = await bcrypt.hash(password, 12);
-  const full_name = `${first_name} ${last_name}`.trim();
+    const { data: existing } = await supabase
+      .from('users').select('id').eq('email', cleanEmail).maybeSingle();
 
-  const { data: user, error } = await sb.from('users').insert({
-    email:         email.toLowerCase(),
-    password_hash: hash,
-    full_name,
-    phone:         phone || null,
-    roles:         ['admin', 'hr', 'hr_manager', 'employee'],
-    is_active:     true,
-  }).select().single();
+    if (existing)
+      return res.status(409).json({
+        success: false,
+        message: 'This email is already registered. Please sign in.',
+        redirect_to_login: true
+      });
 
-  if (error)
-    return res.status(500).json({ success: false, message: error.message });
+    const password_hash = await bcrypt.hash(password, 10);
 
-  const payload = { id: user.id, email: user.email, roles: user.roles, full_name: user.full_name };
-  const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-  res.status(201).json({ success: true, token, user: payload });
+    const { data: user, error: uErr } = await supabase
+      .from('users')
+      .insert({
+        first_name: first_name.trim(),
+        last_name : last_name.trim(),
+        email     : cleanEmail,
+        password_hash,
+        roles     : ['employee'],
+        employment_status: 'active',
+      })
+      .select().single();
+
+    if (uErr) throw uErr;
+
+    // Link to existing employee record OR create new one
+    let empId  = null;
+    let linked = false;
+
+    const { data: preloaded } = await supabase
+      .from('employees').select('id').eq('email', cleanEmail).maybeSingle();
+
+    if (preloaded) {
+      await supabase.from('employees')
+        .update({ user_id: user.id, employment_status: 'active' })
+        .eq('id', preloaded.id);
+      empId  = preloaded.id;
+      linked = true;
+    } else {
+      const { count } = await supabase.from('employees').select('*', { count: 'exact', head: true });
+      const year = new Date().getFullYear();
+      const { data: emp } = await supabase.from('employees').insert({
+        employee_id      : `EMP-${year}-${String((count || 0) + 1).padStart(3,'0')}`,
+        first_name       : first_name.trim(),
+        last_name        : last_name.trim(),
+        email            : cleanEmail,
+        user_id          : user.id,
+        employment_status: 'active',
+        basic_salary     : 0,
+      }).select('id').single();
+      empId = emp?.id;
+    }
+
+    const token = makeToken(user, empId);
+
+    res.status(201).json({
+      success: true,
+      message: `Welcome to NUMA HRIS, ${first_name}!`,
+      token,
+      user   : publicUser(user, { id: empId }),
+      linked,
+    });
+  } catch (err) {
+    console.error('Register error:', err.message);
+    if (err.code === '23505')
+      return res.status(409).json({ success: false, message: 'This email is already registered.', redirect_to_login: true });
+    res.status(500).json({ success: false, message: 'Registration failed. Please try again.' });
+  }
+});
+
+// GET /api/auth/me
+router.get('/me', auth.verify, async (req, res) => {
+  try {
+    const { data: user } = await supabase
+      .from('users').select('id, email, first_name, last_name, roles, employment_status, last_login')
+      .eq('id', req.user.id).single();
+
+    const { data: emp } = await supabase
+      .from('employees').select('id, employee_id, first_name, last_name, position, department, basic_salary, employment_type, date_hired')
+      .eq('email', user.email).maybeSingle();
+
+    res.json({ success: true, ...user, employee: emp || null });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 // POST /api/auth/change-password
-const authMiddleware = require('./auth_middleware');
-router.post('/change-password', authMiddleware, async (req, res) => {
-  const { current_password, new_password } = req.body;
-  if (!new_password || new_password.length < 8)
-    return res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+router.post('/change-password', auth.verify, async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password)
+      return res.status(400).json({ success: false, message: 'Both passwords are required.' });
+    if (new_password.length < 8)
+      return res.status(400).json({ success: false, message: 'New password must be at least 8 characters.' });
 
-  const { data: user } = await sb.from('users').select('password_hash').eq('id', req.user.id).single();
-  const valid = await bcrypt.compare(current_password, user.password_hash);
-  if (!valid) return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+    const { data: user } = await supabase.from('users').select('password_hash').eq('id', req.user.id).single();
+    const ok = await bcrypt.compare(current_password, user.password_hash);
+    if (!ok) return res.status(401).json({ success: false, message: 'Current password is incorrect.' });
 
-  const hash = await bcrypt.hash(new_password, 12);
-  await sb.from('users').update({ password_hash: hash }).eq('id', req.user.id);
-  res.json({ success: true, message: 'Password updated successfully' });
+    await supabase.from('users').update({ password_hash: await bcrypt.hash(new_password, 10) }).eq('id', req.user.id);
+    res.json({ success: true, message: 'Password changed successfully.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
+
+function makeToken(user, employeeId) {
+  return jwt.sign(
+    { id: user.id, email: user.email, roles: user.roles, employee_id: employeeId },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES }
+  );
+}
+
+function publicUser(user, emp) {
+  return {
+    id         : user.id,
+    email      : user.email,
+    first_name : user.first_name,
+    last_name  : user.last_name,
+    roles      : user.roles,
+    employee_id: emp?.id || null,
+  };
+}
 
 module.exports = router;
