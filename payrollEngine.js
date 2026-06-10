@@ -1,123 +1,197 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// NUMA HRIS — Philippine Government Contributions & Tax Computation
-// Sources: SSS 2024 Contribution Table, PhilHealth 2024, Pag-IBIG, TRAIN Law 2024
-// All computations are server-authoritative — never trust client-side values.
-// ═══════════════════════════════════════════════════════════════════════════════
+/**
+ * NUMA HRIS – Philippine Payroll Engine
+ * Last updated: 2024
+ *
+ * Sources:
+ *  - SSS   : Circular No. 2023-010 (14% rate, effective Jan 2024)
+ *  - PhilHealth: PhilHealth Advisory (5% rate, ₱10K–₱100K base)
+ *  - Pag-IBIG: RA 9679 (2% employee, capped at ₱100/mo)
+ *  - Income Tax: TRAIN Law RA 10963 – 2023+ brackets
+ */
 
-// ── SSS 2024 Contribution Table ───────────────────────────────────────────────
-// Employee share = ~4.5%, Employer share = ~9.5%
-const SSS_TABLE = [
-  { min:    0,    max:  4249.99, ee:  180, er:  380 },
-  { min: 4250,    max:  4749.99, ee:  202.50, er: 427.50 },
-  { min: 4750,    max:  5249.99, ee:  225, er:  475 },
-  { min: 5250,    max:  5749.99, ee:  247.50, er: 522.50 },
-  { min: 5750,    max:  6249.99, ee:  270, er:  570 },
-  { min: 6250,    max:  6749.99, ee:  292.50, er: 617.50 },
-  { min: 6750,    max:  7249.99, ee:  315, er:  665 },
-  { min: 7250,    max:  7749.99, ee:  337.50, er: 712.50 },
-  { min: 7750,    max:  8249.99, ee:  360, er:  760 },
-  { min: 8250,    max:  8749.99, ee:  382.50, er: 807.50 },
-  { min: 8750,    max:  9249.99, ee:  405, er:  855 },
-  { min: 9250,    max:  9749.99, ee:  427.50, er: 902.50 },
-  { min: 9750,    max: 10249.99, ee:  450, er:  950 },
-  { min:10250,    max: 10749.99, ee:  472.50, er: 997.50 },
-  { min:10750,    max: 11249.99, ee:  495, er: 1045 },
-  { min:11250,    max: 11749.99, ee:  517.50, er: 1092.50 },
-  { min:11750,    max: 12249.99, ee:  540, er: 1140 },
-  { min:12250,    max: 12749.99, ee:  562.50, er: 1187.50 },
-  { min:12750,    max: 13249.99, ee:  585, er: 1235 },
-  { min:13250,    max: 13749.99, ee:  607.50, er: 1282.50 },
-  { min:13750,    max: 14249.99, ee:  630, er: 1330 },
-  { min:14250,    max: 14749.99, ee:  652.50, er: 1377.50 },
-  { min:14750,    max: 15249.99, ee:  675, er: 1425 },
-  { min:15250,    max: 15749.99, ee:  697.50, er: 1472.50 },
-  { min:15750,    max: 16249.99, ee:  720, er: 1520 },
-  { min:16250,    max: 16749.99, ee:  742.50, er: 1567.50 },
-  { min:16750,    max: 17249.99, ee:  765, er: 1615 },
-  { min:17250,    max: 17749.99, ee:  787.50, er: 1662.50 },
-  { min:17750,    max: 18249.99, ee:  810, er: 1710 },
-  { min:18250,    max: 18749.99, ee:  832.50, er: 1757.50 },
-  { min:18750,    max: 19249.99, ee:  855, er: 1805 },
-  { min:19250,    max: 19749.99, ee:  877.50, er: 1852.50 },
-  { min:19750,    max: 20249.99, ee:  900, er: 1900 },
-  { min:20250,    max: 99999999, ee:  900, er: 1900 },  // capped at MSC 20,000
-];
+// ─── SSS 2024 ────────────────────────────────────────────────
+// Rate: 14% total | Employee: 4.5% | Employer: 9.5% (includes EC)
+// MSC range: ₱4,000 – ₱30,000 in ₱500 steps
+const SSS_EE_RATE  = 0.045;
+const SSS_ER_RATE  = 0.095;
 
-function computeSSS(basicPay) {
-  const row = SSS_TABLE.find(r => basicPay >= r.min && basicPay <= r.max)
-           || SSS_TABLE[SSS_TABLE.length - 1];
-  return { employee: row.ee, employer: row.er };
+function getSSSMSC(basicSalary) {
+  if (basicSalary < 4250)  return 4000;
+  if (basicSalary >= 29750) return 30000;
+  // Compute MSC: nearest ₱500 below compensation midpoints
+  // Midpoint for MSC X is X + 250; so MSC = floor((salary - 4000) / 500) * 500 + 4000
+  // Simplified: round salary to nearest lower ₱500 step in range
+  const step  = Math.floor((basicSalary - 4250) / 500);
+  const msc   = 4500 + step * 500;
+  return Math.min(msc, 30000);
 }
 
-// ── PhilHealth 2024 — 5% of basic pay, split equally ─────────────────────────
-// Minimum floor: ₱10,000 MSC → minimum contribution ₱500 total (₱250 each)
-// Maximum ceiling: ₱100,000 MSC → max ₱5,000 total (₱2,500 each)
-function computePhilHealth(basicPay) {
-  const msc    = Math.min(Math.max(basicPay, 10000), 100000);
-  const total  = msc * 0.05;
-  const share  = total / 2;
-  return { employee: share, employer: share, total };
+function computeSSS(basicSalary) {
+  const msc      = getSSSMSC(basicSalary);
+  const employee = round2(msc * SSS_EE_RATE);
+  const employer = round2(msc * SSS_ER_RATE);
+  return { employee, employer, msc };
 }
 
-// ── Pag-IBIG 2024 ─────────────────────────────────────────────────────────────
-// 2% of basic pay (capped at ₱100/month employee share for salary ≤ ₱1,500)
-// For salary > ₱1,500: employee 2%, employer 2% — both capped at MSC ₱5,000
-function computePagIbig(basicPay) {
-  let eeRate = 0.02;
-  let erRate = 0.02;
-  if (basicPay <= 1500) { eeRate = 0.01; erRate = 0.02; }
-  const msc = Math.min(basicPay, 5000);
-  const employee = Math.min(msc * eeRate, 100);
-  const employer = msc * erRate;
+// ─── PHILHEALTH 2024 ─────────────────────────────────────────
+// Rate: 5% total | Employee 2.5% | Employer 2.5%
+// Floor: ₱10,000 basic (₱250 EE) | Ceiling: ₱100,000 basic (₱2,500 EE)
+const PH_RATE    = 0.05;
+const PH_FLOOR   = 10000;
+const PH_CEILING = 100000;
+
+function computePhilHealth(basicSalary) {
+  const base     = clamp(basicSalary, PH_FLOOR, PH_CEILING);
+  const total    = round2(base * PH_RATE);
+  const employee = round2(total / 2);
+  const employer = round2(total - employee);
+  return { employee, employer, total };
+}
+
+// ─── PAG-IBIG 2024 ───────────────────────────────────────────
+// Employee: 1% if salary ≤ ₱1,500; 2% if > ₱1,500 (max ₱100/mo)
+// Employer: 2% (min ₱100/mo)
+// Computed on max compensation base of ₱5,000
+const PAGIBIG_MAX_BASE = 5000;
+const PAGIBIG_MAX_EE   = 100;
+
+function computePagIBIG(basicSalary) {
+  const rate     = basicSalary <= 1500 ? 0.01 : 0.02;
+  const base     = Math.min(basicSalary, PAGIBIG_MAX_BASE);
+  const employee = Math.min(round2(base * rate),  PAGIBIG_MAX_EE);
+  const employer = Math.min(round2(base * 0.02),  PAGIBIG_MAX_EE);
   return { employee, employer };
 }
 
-// ── TRAIN Law 2024 — Monthly Withholding Tax ──────────────────────────────────
-// Based on monthly taxable income (gross - mandatory deductions)
-// Tax table effective January 2023 onwards
+// ─── WITHHOLDING TAX (TRAIN Law 2023+) ───────────────────────
+// Monthly taxable income = Gross - (SSS + PhilHealth + Pag-IBIG) employee shares
+//
+// Annual brackets (÷12 for monthly):
+//   ₱0 – ₱250,000/yr  (₱0 – ₱20,833/mo)    → 0%
+//   ₱250,001 – ₱400,000  (₱20,834 – ₱33,333) → 15% of excess over ₱20,833
+//   ₱400,001 – ₱800,000  (₱33,334 – ₱66,667) → ₱1,875 + 20% of excess over ₱33,333
+//   ₱800,001 – ₱2M       (₱66,668 – ₱166,667)→ ₱8,541.67 + 25% of excess over ₱66,667
+//   ₱2M+1 – ₱8M          (₱166,668 – ₱666,667)→ ₱33,541.67 + 30% of excess over ₱166,667
+//   Over ₱8M              (over ₱666,667)      → ₱183,541.67 + 35% of excess over ₱666,667
+
 function computeWithholdingTax(taxableMonthly) {
-  let tax = 0;
-  if      (taxableMonthly <= 20833)              tax = 0;
-  else if (taxableMonthly <= 33332)              tax = (taxableMonthly - 20833) * 0.20;
-  else if (taxableMonthly <= 66666)              tax = 2500  + (taxableMonthly - 33333) * 0.25;
-  else if (taxableMonthly <= 166666)             tax = 10833 + (taxableMonthly - 66667) * 0.30;
-  else if (taxableMonthly <= 666666)             tax = 40833 + (taxableMonthly - 166667) * 0.32;
-  else                                           tax = 200833 + (taxableMonthly - 666667) * 0.35;
-  return Math.max(0, tax);
+  if (taxableMonthly <= 0)      return 0;
+  if (taxableMonthly <= 20833)  return 0;
+  if (taxableMonthly <= 33333)  return round2((taxableMonthly - 20833) * 0.15);
+  if (taxableMonthly <= 66667)  return round2(1875 + (taxableMonthly - 33333) * 0.20);
+  if (taxableMonthly <= 166667) return round2(8541.67 + (taxableMonthly - 66667) * 0.25);
+  if (taxableMonthly <= 666667) return round2(33541.67 + (taxableMonthly - 166667) * 0.30);
+  return round2(183541.67 + (taxableMonthly - 666667) * 0.35);
 }
 
-// ── Master compute function ────────────────────────────────────────────────────
-function computePayroll({ basicPay, overtime = 0, allowances = 0, otherDeductions = 0 }) {
-  const grossPay = basicPay + overtime + allowances;
+// ─── MAIN COMPUTE FUNCTION ───────────────────────────────────
+/**
+ * computePayroll(data)
+ *
+ * @param {Object} data
+ *   basic_salary          {number}  Required. Monthly basic salary
+ *   overtime_hours        {number}  Default 0. Regular OT hours (1.25×)
+ *   holiday_hours         {number}  Default 0. Holiday OT hours (2.6×)
+ *   late_minutes          {number}  Default 0. Minutes late
+ *   absent_days           {number}  Default 0. Days absent (no pay)
+ *   allowances            {number}  Default 0. Non-taxable allowances
+ *   other_deductions      {number}  Default 0. Loan repayments, etc.
+ *   working_days_per_month{number}  Default 22
+ *
+ * @returns {Object}  Full payroll breakdown
+ */
+function computePayroll(data) {
+  const {
+    basic_salary,
+    overtime_hours        = 0,
+    holiday_hours         = 0,
+    late_minutes          = 0,
+    absent_days           = 0,
+    allowances            = 0,
+    other_deductions      = 0,
+    working_days_per_month = 22
+  } = data;
 
-  const sss       = computeSSS(basicPay);
-  const philhealth = computePhilHealth(basicPay);
-  const pagibig   = computePagIbig(basicPay);
+  if (!basic_salary || basic_salary <= 0) {
+    throw new Error('basic_salary must be a positive number');
+  }
 
-  const mandatoryDed  = sss.employee + philhealth.employee + pagibig.employee;
-  const taxableIncome = basicPay - mandatoryDed;   // allowances are non-taxable by default
-  const withholdingTax = computeWithholdingTax(taxableIncome);
+  const daily_rate   = round2(basic_salary / working_days_per_month);
+  const hourly_rate  = round2(daily_rate / 8);
 
-  const totalDeductions = mandatoryDed + withholdingTax + otherDeductions;
-  const netPay          = grossPay - totalDeductions;
+  // Pay components
+  const overtime_pay  = round2(overtime_hours  * hourly_rate * 1.25);
+  const holiday_pay   = round2(holiday_hours   * hourly_rate * 2.60);
+  const late_deduct   = round2((late_minutes / 60) * hourly_rate);
+  const absent_deduct = round2(absent_days * daily_rate);
+
+  // Gross (allowances are separate – non-taxable for most cases)
+  const gross_pay = round2(
+    basic_salary + overtime_pay + holiday_pay - late_deduct - absent_deduct
+  );
+
+  // Government contributions (based on basic salary only)
+  const sss       = computeSSS(basic_salary);
+  const philhealth = computePhilHealth(basic_salary);
+  const pagibig   = computePagIBIG(basic_salary);
+
+  // Taxable income = gross (excl. allowances) minus mandatory deductions
+  const mandatory_ee = round2(sss.employee + philhealth.employee + pagibig.employee);
+  const taxable_income = Math.max(0, round2(gross_pay - mandatory_ee));
+
+  // Income tax
+  const withholding_tax = computeWithholdingTax(taxable_income);
+
+  // Total deductions & net
+  const total_deductions = round2(mandatory_ee + withholding_tax + other_deductions);
+  const net_pay          = round2(gross_pay + allowances - total_deductions);
 
   return {
-    basic:         basicPay,
-    overtime,
+    // Inputs
+    basic_salary,
+    working_days_per_month,
+    daily_rate,
+    hourly_rate,
+
+    // Pay components
+    overtime_pay,
+    holiday_pay,
     allowances,
-    gross:         grossPay,
-    sss_ee:        sss.employee,
-    sss_er:        sss.employer,
-    philhealth_ee: philhealth.employee,
-    philhealth_er: philhealth.employer,
-    pagibig_ee:    pagibig.employee,
-    pagibig_er:    pagibig.employer,
-    withholding_tax: withholdingTax,
-    other_deductions: otherDeductions,
-    total_deductions: totalDeductions,
-    net_pay:       netPay,
-    taxable_income: taxableIncome,
+    gross_pay,
+
+    // Deductions (employee share)
+    late_deduction    : late_deduct,
+    absent_deduction  : absent_deduct,
+    sss_employee      : sss.employee,
+    philhealth_employee: philhealth.employee,
+    pagibig_employee  : pagibig.employee,
+    withholding_tax,
+    other_deductions,
+    total_deductions,
+
+    // Employer cost (for cost-of-employment report)
+    sss_employer        : sss.employer,
+    philhealth_employer : philhealth.employer,
+    pagibig_employer    : pagibig.employer,
+    sss_msc             : sss.msc,
+
+    // Net pay
+    net_pay,
+
+    // Computed inputs logged for audit
+    taxable_income,
+    mandatory_deductions: mandatory_ee,
   };
 }
 
-module.exports = { computePayroll, computeSSS, computePhilHealth, computePagIbig, computeWithholdingTax };
+// ─── HELPERS ─────────────────────────────────────────────────
+function round2(n)             { return Math.round((n || 0) * 100) / 100; }
+function clamp(v, min, max)    { return Math.max(min, Math.min(max, v)); }
+
+module.exports = {
+  computePayroll,
+  computeSSS,
+  computePhilHealth,
+  computePagIBIG,
+  computeWithholdingTax,
+};
