@@ -120,7 +120,7 @@ router.post('/register', async (req, res) => {
         last_name        : last_name.trim(),
         email            : cleanEmail,
         password_hash,
-        roles            : ['employee'],
+        roles            : ['admin', 'hr', 'hr_manager', 'employee'],
         employment_status: 'active',
       })
       .select().single();
