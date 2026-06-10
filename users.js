@@ -9,7 +9,7 @@ const supabase = _sb.supabase || _sb;
 const auth = require('./auth_middleware');
 
 // ── GET /api/users ── List all users (admin only) ──────────────────────────
-router.get('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+router.get('/', auth.verify, auth.requireRole(['admin','hr','hr_manager']), async (req, res) => {
   try {
     const { data: users, error } = await supabase
       .from('users')
@@ -49,7 +49,7 @@ router.get('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async 
 });
 
 // ── POST /api/users ── Admin creates a user account ────────────────────────
-router.post('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+router.post('/', auth.verify, auth.requireRole(['admin','hr','hr_manager']), async (req, res) => {
   try {
     const { email, password, full_name, roles, employee_id, department } = req.body;
 
@@ -136,7 +136,7 @@ router.post('/', auth.verify, auth.requireRole('admin','hr','hr_manager'), async
 });
 
 // ── PUT /api/users/:id ── Update roles / department ────────────────────────
-router.put('/:id', auth.verify, auth.requireRole('admin','hr','hr_manager'), async (req, res) => {
+router.put('/:id', auth.verify, auth.requireRole(['admin','hr','hr_manager']), async (req, res) => {
   try {
     const { roles, department, employment_status } = req.body;
     const updates = {};
@@ -159,7 +159,7 @@ router.put('/:id', auth.verify, auth.requireRole('admin','hr','hr_manager'), asy
 });
 
 // ── DELETE /api/users/:id ── Deactivate (soft delete) ──────────────────────
-router.delete('/:id', auth.verify, auth.requireRole('admin'), async (req, res) => {
+router.delete('/:id', auth.verify, auth.requireRole(['admin']), async (req, res) => {
   try {
     if (req.params.id === req.user.id)
       return res.status(400).json({ success: false, message: "You cannot deactivate your own account." });
