@@ -3,7 +3,7 @@ const multer    = require('multer');
 const { parse } = require('csv-parse/sync');
 const router    = express.Router();
 const { supabase } = require('./supabase');
-const auth      = require('./authMiddleware');
+const auth      = require('./auth_middleware');
 
 const upload = multer({
   storage: multer.memoryStorage(),
