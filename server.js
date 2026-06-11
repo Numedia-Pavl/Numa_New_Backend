@@ -6,6 +6,10 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 
+// Railway sits behind a reverse proxy — trust the first hop so
+// express-rate-limit can read X-Forwarded-For correctly
+app.set('trust proxy', 1);
+
 app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: false }));
 
 const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || '*').split(',').map(o => o.trim());
