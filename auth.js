@@ -182,7 +182,7 @@ router.get('/me', auth.verify, async (req, res) => {
   try {
     const { data: user } = await supabase
       .from('users')
-      .select('id, email, first_name, last_name, roles, employment_status, last_login')
+      .select('id, email, first_name, last_name, roles, last_login')
       .eq('id', req.user.id).single();
 
     const { data: emp } = await supabase
