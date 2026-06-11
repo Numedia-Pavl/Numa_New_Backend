@@ -1,5 +1,9 @@
-const jwt      = require('jsonwebtoken');
-const { supabase } = require('./supabase');
+const jwt = require('jsonwebtoken');
+
+// Safe supabase import — works whether supabase.js exports the client
+// directly (module.exports = client) or wrapped (module.exports = { supabase: client })
+const _sb = require('./supabase');
+const supabase = _sb.supabase || _sb;
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
