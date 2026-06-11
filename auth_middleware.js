@@ -24,20 +24,21 @@ async function verify(req, res, next) {
 
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, email, roles, employment_status')
+      .select('id, email, roles')
       .eq('id', decoded.id)
       .single();
 
     if (error || !user)
       return res.status(401).json({ success: false, message: 'Account not found. Contact your HR administrator.' });
 
-    if (user.employment_status === 'inactive')
-      return res.status(403).json({ success: false, message: 'Account is deactivated. Contact your HR administrator.' });
-
     req.user = { id: user.id, email: user.email, roles: user.roles || [] };
 
     const { data: emp } = await supabase
-      .from('employees').select('id').eq('email', user.email).maybeSingle();
+      .from('employees').select('id, employment_status').eq('email', user.email).maybeSingle();
+
+    if (emp && emp.employment_status === 'inactive')
+      return res.status(403).json({ success: false, message: 'Account is deactivated. Contact your HR administrator.' });
+
     req.user.employee_id = emp?.id || null;
 
     next();
