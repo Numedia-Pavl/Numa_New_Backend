@@ -83,6 +83,7 @@ router.post('/', auth.verify, auth.requireRole(['admin','hr','hr_manager']), asy
         email:            cleanEmail,
         first_name,
         last_name,
+        full_name:        `${first_name} ${last_name}`.trim(),
         password_hash,
         roles:            roles || ['employee'],
         department:       department || null,
