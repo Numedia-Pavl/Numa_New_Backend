@@ -13,7 +13,7 @@ router.get('/', auth.verify, auth.requireRole(['admin','hr','hr_manager']), asyn
   try {
     const { data: users, error } = await supabase
       .from('users')
-      .select('id, email, first_name, last_name, roles, employment_status, department, created_at, last_login')
+      .select('id, email, first_name, last_name, full_name, roles, employment_status, department, created_at')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
